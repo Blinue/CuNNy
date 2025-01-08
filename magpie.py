@@ -7,6 +7,9 @@ from common import *
 HEADER = """//!MAGPIE EFFECT
 //!VERSION 4
 //!SORT_NAME __SORT__
+//!USE FP16, MulAdd
+
+#include "..\\StubDefs.hlsli"
 
 //!TEXTURE
 Texture2D INPUT;
@@ -26,8 +29,8 @@ SamplerState SL;
 
 //!COMMON
 #define O(t, x, y) t.SampleLevel(SP, pos + float2(x, y) * pt, 0)
-#define V4 min16float4
-#define M4 min16float4x4
+#define V4 MF4
+#define M4 MF4x4
 
 """
 
@@ -83,21 +86,22 @@ def prelude(ps, ins, sz, stype, nouts=1, save=None):
         fn = f'O({inv}, x, y)'
         if inv == 'INPUT':
             if not args.rgb:
-                fn = f'dot(float3(0.299, 0.587, 0.114), {fn}.rgb)'
+                fn = f'dot(MF3(0.299, 0.587, 0.114), {fn}.rgb)'
             else:
                 fn = f'{fn}.rgb'
         S(f'#define L{i}(x, y) {stype}({fn})')
     return save
 
-def weight(ws, x, y, ich, och, d, iidx, oidx, l):
+def weight(ws, x, y, ich, och, d, iidx, oidx):
     w = [fmt(v) for v in ws[4*oidx:4*(1+oidx), 4*iidx:4*(1+iidx), y, x]
                                   .swapaxes(0, 1).ravel().tolist()]
     wstr = ', '.join(w)
     if ich >= 4:
-        return f'mul({l}, M4({wstr}))'
+        return f'M4({wstr})'
     elif ich == 3:
-        return f'mul({l}, M3x4({wstr}))'
-    return f'V4({wstr}) * {l}'
+        return f'M3x4({wstr})'
+    else:
+        return f'V4({wstr})'
 
 def write(ps, k, actfn, ins):
     ws = m[k + 'weight']
@@ -112,7 +116,7 @@ def write(ps, k, actfn, ins):
     d = sz[2]
     shuffle = ps == 'out-shuffle'
     nouts = och // 4
-    stype = 'min16float' if ich == 1 else 'V3' if ich == 3 else 'V4'
+    stype = 'MF' if ich == 1 else 'V3' if ich == 3 else 'V4'
     cent = d // 2
     nins = max(ich // 4, 1)
 
@@ -120,8 +124,8 @@ def write(ps, k, actfn, ins):
     texs = prelude(ps, ins, sz, stype, nouts=nouts, save=texs)
 
     if inv == 'INPUT' and args.rgb:
-        S(f'#define V3 min16float3')
-        S(f'#define M3x4 min16float3x4')
+        S(f'#define V3 MF3')
+        S(f'#define M3x4 MF3x4')
 
     S(f'void Pass{n_pass}(uint2 blockStart, uint3 tid) {OPENBR}', t=1)
     S(f'float2 pt = float2(GetInputPt());')
@@ -141,6 +145,12 @@ def write(ps, k, actfn, ins):
     S(f'{stype} {", ".join(f"s{i}_{y}_{x}" for i, y, x in np.ndindex(I, d, d))};')
     S(f'V4 {", ".join(f"r{o} = 0.0" for o in range(nouts))};')
 
+    for o in range(nouts):
+        bn = k + 'bias'
+        if bn in m and not np.all(m[bn] < 1e-5):
+            b = [fmt(v.item()) for v in m[bn].ravel()[4*o:4*(o+1)]]
+            S(f'r{o} = V4({", ".join(b)});')
+
     for iidx in range(0, max(ich // 4, 1), I):
         vi = min(I, nins - iidx)
 
@@ -158,14 +168,11 @@ def write(ps, k, actfn, ins):
             si = iidx + i
             for o in range(nouts):
                 l = f's{i}_{y}_{x}'
-                wstr = weight(ws, x, y, ich, och, d, si, o, l)
-                S(f'r{o} += {wstr};')
+                wstr = weight(ws, x, y, ich, och, d, si, o)
+                S(f'r{o} = MulAdd({l}, {wstr}, r{o});')
 
     for o in range(nouts):
         bn = k + 'bias'
-        if bn in m and not np.all(m[bn] < 1e-5):
-            b = [fmt(v.item()) for v in m[bn].ravel()[4*o:4*(o+1)]]
-            S(f'r{o} += V4({", ".join(b)});')
         if actfn:
             S(f'r{o} = {actfn.replace("T", "V4").replace("X", f"r{o}")};')
         if shuffle:
@@ -176,20 +183,20 @@ def write(ps, k, actfn, ins):
         RY = '0.299, 0.587, 0.114, -0.169, -0.331, 0.5, 0.5, -0.419, -0.081'
         YR = '1, -0.00093, 1.401687, 1, -0.3437, -0.71417, 1, 1.77216, 0.00099'
         if not args.rgb:
-            S(f'static const float3x3 RY = {{{RY}}}, YR = {{{YR}}};')
+            S(f'static const MF3x3 RY = {{{RY}}}, YR = {{{YR}}};')
         S('float2 opt = float2(GetOutputPt()), '
           'fpos = (float2(gxy) + 0.5) * opt;')
         if not args.rgb:
-            S('float3 yuv;')
+            S('MF3 yuv;')
         for y, x in np.ndindex(2, 2):
             c = 'xyzw'[y*2 + x]
             src = f'INPUT.SampleLevel(SL, fpos + float2({x}.0, {y}.0) * opt, 0).rgb'
             if args.rgb:
-                l = f'saturate({src} + float3(r0.{c}, r1.{c}, r2.{c}))'
+                l = f'saturate({src} + MF3(r0.{c}, r1.{c}, r2.{c}))'
             else:
                 S(f'yuv = mul(RY, {src});')
-                l = f'mul(YR, float3(saturate(yuv.r + r0.{c}), yuv.yz))'
-            S(f'OUTPUT[gxy + int2({x}, {y})] = float4({l}, 1.0);')
+                l = f'mul(YR, MF3(saturate(yuv.r + r0.{c}), yuv.yz))'
+            S(f'OUTPUT[gxy + int2({x}, {y})] = MF4({l}, 1.0);')
 
     S(CLOSEBR, t=-1)
 
