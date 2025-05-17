@@ -9,7 +9,7 @@ HEADER = """//!MAGPIE EFFECT
 //!SORT_NAME __SORT__
 //!USE FP16, MulAdd
 
-#include "..\\StubDefs.hlsli"
+#include "../StubDefs.hlsli"
 
 //!TEXTURE
 Texture2D INPUT;
@@ -169,7 +169,7 @@ def write(ps, k, actfn, ins):
             for o in range(nouts):
                 l = f's{i}_{y}_{x}'
                 wstr = weight(ws, x, y, ich, och, d, si, o)
-                S(f'r{o} = MulAdd({l}, {wstr}, r{o});')
+                S(f'r{o} = {"MulAdd" if ich != 1 else "mad"}({l}, {wstr}, r{o});')
 
     for o in range(nouts):
         bn = k + 'bias'
@@ -232,9 +232,15 @@ def main(_m, _args, help):
     header = (f'// CuNNy {args.name.replace("-", " ")} - '
                'https://github.com/funnyplanter/CuNNy\n' + GPL + '\n')
 
-    suf = args.name[args.name.rfind("NVL")+3:].replace('-', '')
-    suf += '-' if suf != '' else ''
-    header += HEADER.replace('__SORT__', f'CuNNy-{suf}{args.size:07}')
+    if args.name == 'veryfast':
+        sort_name = '0001'
+    elif args.name == 'faster':
+        sort_name = '0002'
+    elif args.name == 'fast':
+        sort_name = '0003'
+    else:
+        sort_name = '0' + args.name
+    header += HEADER.replace('__SORT__', f'CuNNy-{sort_name}')
 
     texs = ['INPUT']
     relu = 'max(X, 0.0)'
