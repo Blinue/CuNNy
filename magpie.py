@@ -7,7 +7,8 @@ from common import *
 HEADER = """//!MAGPIE EFFECT
 //!VERSION 4
 //!SORT_NAME __SORT__
-//!USE FP16, MulAdd
+//!USE MulAdd
+//!CAPABILITY FP16
 
 #include "../StubDefs.hlsli"
 
@@ -82,6 +83,7 @@ def prelude(ps, ins, sz, stype, nouts=1, save=None):
     else:
         save = alloc_imgs(ins, len(save))
         S(f'//!OUT {", ".join(save)}')
+    S('')
     for i, inv in enumerate(ins):
         fn = f'O({inv}, x, y)'
         if inv == 'INPUT':
@@ -127,7 +129,7 @@ def write(ps, k, actfn, ins):
         S(f'#define V3 MF3')
         S(f'#define M3x4 MF3x4')
 
-    S(f'void Pass{n_pass}(uint2 blockStart, uint3 tid) {OPENBR}', t=1)
+    S(f'\nvoid Pass{n_pass}(uint2 blockStart, uint3 tid) {OPENBR}', t=1)
     S(f'float2 pt = float2(GetInputPt());')
     if shuffle:
         S('uint2 gxy = (Rmp8x8(tid.x) << 1) + blockStart;')
@@ -199,6 +201,8 @@ def write(ps, k, actfn, ins):
             S(f'OUTPUT[gxy + int2({x}, {y})] = MF4({l}, 1.0);')
 
     S(CLOSEBR, t=-1)
+    if not shuffle:
+        S('')
 
     return texs
 
